@@ -28,10 +28,7 @@ def download_tfstate_file(s3_client, bucket: str, key: str, local_path: str):
 
 def process_tfstate_file(file_path: str):
     """Extract role and user ARNs, and their associated policies, from the downloaded Terraform state file."""
-    global ALL_POLICIES, ALL_GROUPS, ALL_USERS, ALL_ROLES
-
-    if not file_path.endswith(".tfstate"):
-        return
+    global ALL_POLICIES, ALL_GROUPS, ALL_USERS, ALL_ROLES    
 
     with open(file_path, 'rt', encoding='utf-8') as file:
         data = json.load(file)
@@ -50,16 +47,17 @@ def process_tfstate_file(file_path: str):
 
                         elif resource['type'] == 'aws_iam_user_policy_attachment':
                             principal = instance['attributes']['user']
-                            ALL_USERS.update(set([principal]))
+                            ALL_USERS.add(principal)
 
                         else:
                             principal = instance['attributes']['group']
-                            ALL_GROUPS.update(set([principal]))
+                            if not principal in ALL_GROUPS:
+                                ALL_GROUPS[principal]= {"users": set([])}
 
                         if policy_arn in ALL_POLICIES:
-                            ALL_POLICIES[policy_arn]["principals"].update(set([principal]))
+                            ALL_POLICIES[policy_arn]["principals"].add(principal)
                         else:
-                            ALL_POLICIES[policy_arn]= {"principals": [principal], "permissions": ""}
+                            ALL_POLICIES[policy_arn]= {"principals": set([principal]), "permissions": ""}
 
                 # AWS role inline policy (always new)
                 elif resource['type'] in ('aws_iam_role_policy', 'aws_iam_user_policy', 'aws_iam_group_policy'):
@@ -74,11 +72,12 @@ def process_tfstate_file(file_path: str):
 
                         elif resource['type'] == 'aws_iam_user_policy':
                             principal = instance['attributes']['user']
-                            ALL_USERS.update(set([principal]))
+                            ALL_USERS.add(principal)
 
                         else:
                             principal = instance['attributes']['group']
-                            ALL_GROUPS.update(set([principal]))
+                            if not principal in ALL_GROUPS:
+                                ALL_GROUPS[principal]= {"users": set([])}
 
                         ALL_POLICIES[policy_id]= {"principals": set([principal]), "permissions": policy}
 
@@ -93,13 +92,13 @@ def process_tfstate_file(file_path: str):
                         else:
                             ALL_POLICIES[policy_arn]= {"principals": set([]), "permissions": policy}
                 
+                # aws_iam_policy_document has also this info but it doesn't have the arn
+                
                 # Group memberships
                 elif resource['type'] == 'aws_iam_group_membership':
                     for instance in resource['instances']:
                         group = instance['attributes']['group']
                         users = instance['attributes']['users']
-
-                        ALL_GROUPS.update(set([group]))
                         
                         if group in ALL_GROUPS:
                             ALL_GROUPS[group]["users"].update(set(users))
@@ -107,7 +106,7 @@ def process_tfstate_file(file_path: str):
                             ALL_GROUPS[group]= {"users": set(users)}
                         
                         for user in users:
-                            ALL_USERS.update(set([user]))
+                            ALL_USERS.add(user)
                 
                 # User memberships
                 elif resource['type'] == 'aws_iam_user_group_membership':
@@ -115,12 +114,11 @@ def process_tfstate_file(file_path: str):
                         groups = instance['attributes']['groups']
                         user = instance['attributes']['user']
 
-                        ALL_USERS.update(set([user]))
+                        ALL_USERS.add(user)
                         
                         for group in groups:
-                            ALL_GROUPS.update(set([group]))
                             if group in ALL_GROUPS:
-                                ALL_GROUPS[group]["users"].update(set([user]))
+                                ALL_GROUPS[group]["users"].add(user)
                             else:
                                 ALL_GROUPS[group]= {"users": set([user])}
                             
@@ -135,13 +133,14 @@ def process_tfstate_file(file_path: str):
                 elif resource['type'] == 'aws_iam_user':
                     for instance in resource['instances']:
                         user = instance['attributes']['arn'].split("/")[-1]
-                        ALL_USERS.update(set([user]))
+                        ALL_USERS.add(user)
                 
                 # Group creation
                 elif resource['type'] == 'aws_iam_group':
                     for instance in resource['instances']:
                         group = instance['attributes']['arn'].split("/")[-1]
-                        ALL_GROUPS.update(set([group]))
+                        if not group in ALL_GROUPS:
+                            ALL_GROUPS[group]= {"users": set([])}
 
 
 
@@ -153,7 +152,7 @@ def get_all_keys(s3_client, bucket_name: str, prefix: str) -> Dict[str, Any]:
     for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
         if 'Contents' in page:
             tfstate_files.extend(page['Contents'])
-            print("Found {} tfstate files".format(len(tfstate_files)), end='\r')
+            print("Found {} files".format(len(tfstate_files)), end='\r')
     
     print()
 
@@ -182,6 +181,7 @@ def print_groups():
         users = ", ".join(info["users"])
         print(f"{BLUE}- {group}:{END}")
         print(f"  {GREEN}Users:{END} {users}")
+        print()
 
 def print_users():
     """Print all users."""
@@ -198,6 +198,7 @@ def print_policies():
         print(f"{BLUE}- {policy_arn}:{END}")
         print(f"  {RED}Principals:{END} {principals}")
         print(f"  {GREEN}Permissions:{END}\n{permissions}")
+        print()
 
 def main():
     global ALL_POLICIES
